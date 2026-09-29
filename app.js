@@ -196,8 +196,72 @@ function bindTips(root) {
   root.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
 }
 
-/* ----------------------------------------------------------------- charts */
-const W = 760;
+/* ----------------------------------------------------------------- charts
+ * Charts are built at the container's real pixel width instead of a fixed
+ * viewBox the browser then rescales. The old code drew into a 760-unit box
+ * that a ~565px card squeezed to 74%, so a "12px" label landed at ~9px - and
+ * near 6px on a phone. Drawing 1:1 means the CSS sizes are the real sizes.
+ *
+ * A chart is registered as a spec with a draw(width) function; the markup only
+ * holds a placeholder, which renderCharts() fills once the element has a width.
+ */
+const CHARTS = new Map();
+let chartSeq = 0;
+
+function chartSlot(draw) {
+  const id = 'c' + (++chartSeq);
+  CHARTS.set(id, draw);
+  return `<div class="chart" data-chart="${id}"></div>`;
+}
+
+const slotWidth = el => Math.max(240, Math.round(
+  el.clientWidth || (el.parentElement && el.parentElement.clientWidth) || 560));
+
+function drawSlot(el, w) {
+  const draw = CHARTS.get(el.getAttribute('data-chart'));
+  if (!draw) return;
+  el.__w = w;
+  el.innerHTML = draw(w);
+}
+
+/* Watch the containers, not the window. A window-resize listener misses the
+   cases that matter most - the two-column grid collapsing to one at 900px, a
+   phone rotating, browser zoom - and can fire before layout has settled, which
+   left charts drawn at the old width and rescaled by the browser (the exact
+   font-shrinking this rewrite removes). */
+const chartRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(entries => {
+  for (const e of entries) {
+    const el = e.target;
+    const w = Math.max(240, Math.round(e.contentRect.width));
+    if (el.__w === w) continue;      // guard against redraw loops
+    drawSlot(el, w);
+  }
+}) : null;
+
+function renderCharts(root) {
+  if (chartRO) chartRO.disconnect();
+  root.querySelectorAll('[data-chart]').forEach(el => {
+    drawSlot(el, slotWidth(el));
+    if (chartRO) chartRO.observe(el);
+  });
+}
+
+if (!chartRO) {
+  let resizeTimer = null;
+  addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => renderCharts(app), 160);
+  });
+}
+
+/** Wrap a bar in a link when the category maps to a search filter. */
+function clickWrap(href, tip) {
+  return href
+    ? [`<a href="${esc(href)}" class="clk" data-tip="${esc(tip)}">`, '</a>']
+    : [`<g data-tip="${esc(tip)}">`, '</g>'];
+}
+const qsLink = (key, val) => `#/search?${key}=${encodeURIComponent(val)}`;
+
 // rounded data-end: square at the baseline, 4px round at the value end
 function barRight(x, y, w, h, r) {
   r = Math.max(0, Math.min(r, w, h / 2));
@@ -213,74 +277,85 @@ function barUp(x, y, w, h, r) {
 }
 const trunc = (s, n) => (s && s.length > n) ? s.slice(0, n - 1) + '…' : (s || '');
 
-/** Ranked horizontal bars. rows:[{v,n}] */
-function hBars(rows, opt = {}) {
-  const labW = opt.labelWidth ?? 210, rowH = opt.rowH ?? 26, gap = 6, padR = 62;
-  const h = rows.length * rowH + 8;
+/** Ranked horizontal bars. rows:[{v,n,raw?}]  opt.href(row) -> link or null */
+function hBars(rows, opt, W) {
+  const rowH = opt.rowH ?? 30, gap = 9, valW = 60;
+  const labW = Math.round(Math.min(opt.labelMax ?? 330,
+                                   Math.max(92, W * (opt.labelFrac ?? 0.40))));
+  const plotW = Math.max(36, W - labW - valW);
+  const h = rows.length * rowH + 10;
   const max = Math.max(1, ...rows.map(r => r.n));
-  const plotW = W - labW - padR;
-  let s = `<svg viewBox="0 0 ${W} ${h}" role="img" aria-label="${esc(opt.aria || '')}">`;
+  const color = opt.color || 'var(--series-1)';
+  const maxChars = Math.max(6, Math.floor((labW - 12) / 6.6));  // ~6.6px per char at 13.5px
+  let s = `<svg viewBox="0 0 ${W} ${h}" width="${W}" height="${h}" role="img" aria-label="${esc(opt.aria || '')}">`;
   rows.forEach((r, i) => {
-    const y = i * rowH + 4, bh = rowH - gap;
+    const y = i * rowH + 5, bh = rowH - gap;
     const bw = (r.n / max) * plotW;
-    const color = opt.color || 'var(--series-1)';
-    const tipHtml = `<div class='t'>${esc(r.v)}</div><div class='r'>${fmt(r.n)} trials` +
-      (opt.pctOf ? ` · ${(r.n / opt.pctOf * 100).toFixed(1)}%` : '') + `</div>`;
-    s += `<g data-tip="${esc(tipHtml)}">`;
-    s += `<rect class="hit" x="0" y="${y - 2}" width="${W}" height="${rowH}"/>`;
-    s += `<text class="lbl-txt" x="${labW - 10}" y="${y + bh / 2 + 4}" text-anchor="end">${esc(trunc(r.v || '—', opt.labelChars ?? 30))}</text>`;
+    const label = r.v || '—';
+    const href = opt.href ? opt.href(r) : null;
+    const tip = `<div class='t'>${esc(label)}</div><div class='r'>${fmt(r.n)} trials`
+      + (opt.pctOf ? ` · ${(r.n / opt.pctOf * 100).toFixed(1)}%` : '') + `</div>`
+      + (href ? `<div class='r' style='margin-top:5px'>Click to see these trials →</div>` : '');
+    const [open, close] = clickWrap(href, tip);
+    s += open;
+    s += `<rect class="hit" x="0" y="${y - 3}" width="${W}" height="${rowH}"/>`;
+    s += `<text class="lbl-txt" x="${labW - 10}" y="${y + bh / 2 + 5}" text-anchor="end">${esc(trunc(label, maxChars))}</text>`;
     s += `<path d="${barRight(labW, y, bw, bh, 4)}" fill="${color}"/>`;
-    s += `<text class="val-txt" x="${labW + bw + 8}" y="${y + bh / 2 + 4}">${fmt(r.n)}</text>`;
-    s += `</g>`;
+    s += `<text class="val-txt" x="${labW + bw + 8}" y="${y + bh / 2 + 5}">${fmt(r.n)}</text>`;
+    s += close;
   });
   return s + '</svg>';
 }
 
 /** Vertical bars over time. rows:[{y,n}] */
-function timeBars(rows, opt = {}) {
-  const h = 230, padL = 44, padB = 26, padT = 12;
+function timeBars(rows, opt, W) {
+  const h = opt.h ?? 250, padL = 54, padB = 32, padT = 14;
   const max = Math.max(1, ...rows.map(r => r.n));
-  const plotW = W - padL - 10, plotH = h - padB - padT;
-  const bw = Math.max(4, plotW / rows.length - 5);
-  const tickVals = niceTicks(max, 4);
-  let s = `<svg viewBox="0 0 ${W} ${h}" role="img" aria-label="${esc(opt.aria || '')}">`;
-  tickVals.forEach(t => {
+  const plotW = W - padL - 12, plotH = h - padB - padT;
+  const slot = plotW / rows.length;
+  const bw = Math.max(3, slot - 5);
+  const color = opt.color || 'var(--series-1)';
+  const step = Math.max(1, Math.ceil(rows.length / Math.max(3, Math.floor(plotW / 38))));
+  let s = `<svg viewBox="0 0 ${W} ${h}" width="${W}" height="${h}" role="img" aria-label="${esc(opt.aria || '')}">`;
+  niceTicks(max, 4).forEach(t => {
     const y = padT + plotH - (t / max) * plotH;
-    s += `<line class="gridline" x1="${padL}" y1="${y}" x2="${W - 10}" y2="${y}"/>`;
-    s += `<text class="axis-txt" x="${padL - 8}" y="${y + 4}" text-anchor="end">${fmt(t)}</text>`;
+    s += `<line class="gridline" x1="${padL}" y1="${y}" x2="${W - 12}" y2="${y}"/>`;
+    s += `<text class="axis-txt" x="${padL - 9}" y="${y + 4}" text-anchor="end">${fmt(t)}</text>`;
   });
   rows.forEach((r, i) => {
-    const x = padL + i * (plotW / rows.length) + 2.5;
+    const x = padL + i * slot + 2.5;
     const bh = (r.n / max) * plotH, y = padT + plotH - bh;
     const partial = opt.partialFrom && r.y >= opt.partialFrom;
-    const tipHtml = `<div class='t'>${esc(r.y)}</div><div class='r'>${fmt(r.n)} trials` +
-      (partial ? ' (partial year)' : '') + `</div>`;
-    s += `<g data-tip="${esc(tipHtml)}">`;
+    const tip = `<div class='t'>${esc(r.y)}</div><div class='r'>${fmt(r.n)} trials`
+      + (partial ? ' (partial year)' : '') + `</div>`;
+    s += `<g data-tip="${esc(tip)}">`;
     s += `<rect class="hit" x="${x - 2}" y="${padT}" width="${bw + 5}" height="${plotH}"/>`;
-    s += `<path d="${barUp(x, y, bw, bh, 4)}" fill="var(--series-1)"${partial ? ' opacity="0.55"' : ''}/>`;
+    s += `<path d="${barUp(x, y, bw, bh, 4)}" fill="${color}"${partial ? ' opacity="0.55"' : ''}/>`;
     s += `</g>`;
-    if (i % Math.ceil(rows.length / 11) === 0 || i === rows.length - 1)
-      s += `<text class="axis-txt" x="${x + bw / 2}" y="${h - 8}" text-anchor="middle">${esc(String(r.y).slice(2))}</text>`;
+    if (i % step === 0 || i === rows.length - 1)
+      s += `<text class="axis-txt" x="${x + bw / 2}" y="${h - 9}" text-anchor="middle">${esc(String(r.y).slice(2))}</text>`;
   });
-  s += `<line class="baseline" x1="${padL}" y1="${padT + plotH}" x2="${W - 10}" y2="${padT + plotH}"/>`;
+  s += `<line class="baseline" x1="${padL}" y1="${padT + plotH}" x2="${W - 12}" y2="${padT + plotH}"/>`;
   return s + '</svg>';
 }
 
 /** Stacked vertical bars, 2-3 series. rows:[{y, parts:[n,...]}] */
-function stackBars(rows, names, colors, opt = {}) {
-  const h = 230, padL = 44, padB = 26, padT = 12;
+function stackBars(rows, names, colors, opt, W) {
+  const h = opt.h ?? 250, padL = 54, padB = 32, padT = 14;
   const totals = rows.map(r => r.parts.reduce((a, b) => a + b, 0));
   const max = Math.max(1, ...totals);
-  const plotW = W - padL - 10, plotH = h - padB - padT;
-  const bw = Math.max(4, plotW / rows.length - 5);
-  let s = `<svg viewBox="0 0 ${W} ${h}" role="img" aria-label="${esc(opt.aria || '')}">`;
+  const plotW = W - padL - 12, plotH = h - padB - padT;
+  const slot = plotW / rows.length;
+  const bw = Math.max(3, slot - 5);
+  const step = Math.max(1, Math.ceil(rows.length / Math.max(3, Math.floor(plotW / 38))));
+  let s = `<svg viewBox="0 0 ${W} ${h}" width="${W}" height="${h}" role="img" aria-label="${esc(opt.aria || '')}">`;
   niceTicks(max, 4).forEach(t => {
     const y = padT + plotH - (t / max) * plotH;
-    s += `<line class="gridline" x1="${padL}" y1="${y}" x2="${W - 10}" y2="${y}"/>`;
-    s += `<text class="axis-txt" x="${padL - 8}" y="${y + 4}" text-anchor="end">${fmt(t)}</text>`;
+    s += `<line class="gridline" x1="${padL}" y1="${y}" x2="${W - 12}" y2="${y}"/>`;
+    s += `<text class="axis-txt" x="${padL - 9}" y="${y + 4}" text-anchor="end">${fmt(t)}</text>`;
   });
   rows.forEach((r, i) => {
-    const x = padL + i * (plotW / rows.length) + 2.5;
+    const x = padL + i * slot + 2.5;
     let acc = 0;
     const tot = totals[i] || 1;
     const lines = r.parts.map((p, k) =>
@@ -300,10 +375,10 @@ function stackBars(rows, names, colors, opt = {}) {
       acc += p;
     });
     s += `</g>`;
-    if (i % Math.ceil(rows.length / 11) === 0 || i === rows.length - 1)
-      s += `<text class="axis-txt" x="${x + bw / 2}" y="${h - 8}" text-anchor="middle">${esc(String(r.y).slice(2))}</text>`;
+    if (i % step === 0 || i === rows.length - 1)
+      s += `<text class="axis-txt" x="${x + bw / 2}" y="${h - 9}" text-anchor="middle">${esc(String(r.y).slice(2))}</text>`;
   });
-  s += `<line class="baseline" x1="${padL}" y1="${padT + plotH}" x2="${W - 10}" y2="${padT + plotH}"/>`;
+  s += `<line class="baseline" x1="${padL}" y1="${padT + plotH}" x2="${W - 12}" y2="${padT + plotH}"/>`;
   return s + '</svg>';
 }
 
@@ -358,48 +433,69 @@ async function viewDashboard() {
     <div class="grid g-2">
       <div class="card"><div class="hd"><h2>Trials registered per year</h2>
         <span class="note">by first-posted date</span></div>
-        <div class="chart">${timeBars(m.by_year.filter(r => r.y >= 2005), { partialFrom: partial, aria: 'Trials registered per year' })}</div></div>
+        ${chartSlot(w => timeBars(m.by_year.filter(r => r.y >= 2005),
+          { partialFrom: partial, color: 'var(--series-1)', aria: 'Trials registered per year' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Industry vs. academic &amp; other</h2>
         <span class="note">lead sponsor class</span></div>
-        <div class="chart">${stackBars(stackRows, ['Industry', 'Academic / government / other'],
-          ['var(--series-1)', 'var(--series-2)'], { aria: 'Industry versus other sponsors per year' })}</div>
-        ${legend(['Industry', 'Academic / government / other'], ['var(--series-1)', 'var(--series-2)'])}</div>
+        ${chartSlot(w => stackBars(stackRows, STACK_NAMES, STACK_COLORS,
+          { aria: 'Industry versus other sponsors per year' }, w))}
+        ${legend(STACK_NAMES, STACK_COLORS)}</div>
 
-      <div class="card"><div class="hd"><h2>Study phase</h2></div>
-        <div class="chart">${hBars(phase, { labelWidth: 150, pctOf: t.trials, aria: 'Trials by phase' })}</div></div>
+      <div class="card"><div class="hd"><h2>Study phase</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(phase, { pctOf: t.trials, labelFrac: 0.30, color: 'var(--series-7)',
+          href: r => qsLink('phase', r.v), aria: 'Trials by phase' }, w))}</div>
 
-      <div class="card"><div class="hd"><h2>Recruitment status</h2></div>
-        <div class="chart">${hBars(m.by_status.map(r => ({ v: pretty(r.v), n: r.n })),
-          { labelWidth: 190, pctOf: t.trials, aria: 'Trials by status' })}</div></div>
+      <div class="card"><div class="hd"><h2>Recruitment status</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(m.by_status.map(r => ({ v: pretty(r.v), n: r.n, raw: r.v })),
+          { pctOf: t.trials, labelFrac: 0.36, color: 'var(--series-3)',
+            href: r => qsLink('status', r.raw), aria: 'Trials by status' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Most active provinces</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(m.provinces.slice(0, 14), { labelFrac: 0.40, color: 'var(--series-6)',
+          href: r => qsLink('province', r.v), aria: 'Trials by province' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Most active cities</h2>
         <span class="note">mainland sites</span></div>
-        <div class="chart">${hBars(m.provinces.slice(0, 14), { labelWidth: 190, aria: 'Trials by province' })}</div></div>
+        ${chartSlot(w => hBars(m.cities.slice(0, 14), { labelFrac: 0.32, color: 'var(--series-4)',
+          aria: 'Trials by city' }, w))}</div>
 
-      <div class="card"><div class="hd"><h2>Most active cities</h2></div>
-        <div class="chart">${hBars(m.cities.slice(0, 14), { labelWidth: 150, aria: 'Trials by city' })}</div></div>
+      <div class="card"><div class="hd"><h2>Largest industry sponsors</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(m.top_industry.slice(0, 15), { labelFrac: 0.50, labelMax: 330,
+          color: 'var(--series-2)', href: r => qsLink('sponsor', r.v),
+          aria: 'Top industry sponsors' }, w))}</div>
 
-      <div class="card"><div class="hd"><h2>Largest industry sponsors</h2></div>
-        <div class="chart">${hBars(m.top_industry.slice(0, 15),
-          { labelWidth: 290, labelChars: 42, color: 'var(--series-2)', aria: 'Top industry sponsors' })}</div></div>
-
-      <div class="card"><div class="hd"><h2>Largest academic sponsors</h2></div>
-        <div class="chart">${hBars(m.top_sponsors.filter(s => s.cls !== 'INDUSTRY').slice(0, 15),
-          { labelWidth: 290, labelChars: 42, aria: 'Top non-industry sponsors' })}</div></div>
+      <div class="card"><div class="hd"><h2>Largest academic sponsors</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(m.top_sponsors.filter(s => s.cls !== 'INDUSTRY').slice(0, 15),
+          { labelFrac: 0.50, labelMax: 330, color: 'var(--series-1)',
+            href: r => qsLink('sponsor', r.v), aria: 'Top non-industry sponsors' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Most studied conditions</h2>
-        <span class="note">MeSH terms</span></div>
-        <div class="chart">${hBars(m.top_mesh.slice(0, 15), { labelWidth: 230, labelChars: 34,
-          color: 'var(--series-3)', aria: 'Top conditions' })}</div></div>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(m.top_conditions.slice(0, 15), { labelFrac: 0.46, labelMax: 300,
+          color: 'var(--series-5)', href: r => qsLink('condition', r.v),
+          aria: 'Top conditions' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Condition areas</h2>
+        <span class="note">standardised MeSH terms</span></div>
+        ${chartSlot(w => hBars(m.top_mesh.slice(0, 15), { labelFrac: 0.46, labelMax: 300,
+          color: 'var(--series-8)', aria: 'Top MeSH condition areas' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Countries partnered with</h2>
         <span class="note">co-located sites outside China</span></div>
-        <div class="chart">${hBars(m.partners.slice(0, 15), { labelWidth: 170,
-          color: 'var(--series-3)', aria: 'Partner countries' })}</div></div>
+        ${chartSlot(w => hBars(m.partners.slice(0, 15), { labelFrac: 0.34, color: 'var(--series-3)',
+          aria: 'Partner countries' }, w))}</div>
     </div>`;
-  bindTips(app);
+  renderCharts(app);
 }
+const STACK_NAMES = ['Industry', 'Academic / government / other'];
+const STACK_COLORS = ['var(--series-1)', 'var(--series-2)'];
+const CLICK_HINT = '<span class="hint"><b>Click a bar</b> to filter</span>';
 const pretty = s => String(s || '').replace(/_/g, ' ').toLowerCase()
   .replace(/^./, c => c.toUpperCase());
 
@@ -722,6 +818,9 @@ async function route() {
 addEventListener('hashchange', route);
 
 (async function init() {
+  // One delegated tooltip listener for the whole app: charts are re-rendered on
+  // resize and on every navigation, so binding per view would stack listeners.
+  bindTips(document.body);
   try {
     META = await DS.meta();
     document.getElementById('snap').textContent =
