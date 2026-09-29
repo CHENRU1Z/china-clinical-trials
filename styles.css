@@ -203,6 +203,21 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 .yr { display: flex; gap: 6px; align-items: center; }
 .yr input { width: 100%; }
 
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.chips:empty { display: none; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+  background: var(--accent-wash); border: 1px solid var(--series-1);
+  color: var(--text-secondary); border-radius: 999px; padding: 4px 6px 4px 12px;
+}
+.chip b { color: var(--text-primary); font-weight: 600; }
+.chip-x {
+  border: 0; background: transparent; color: var(--text-secondary);
+  cursor: pointer; font-size: 16px; line-height: 1; padding: 0 5px;
+  border-radius: 50%;
+}
+.chip-x:hover { background: var(--series-1); color: #fff; }
+
 .resbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .count { font-size: 14px; color: var(--text-secondary); }
 .count b { color: var(--text-primary); font-variant-numeric: tabular-nums; }

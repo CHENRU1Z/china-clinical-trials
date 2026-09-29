@@ -65,6 +65,11 @@ const Static = {
     const wantSpon = dIdx(D.sponsor, p('sponsor'));
     const wantProv = dIdx(D.province, p('province'));
     const wantCond = dIdx(D.condition, p('condition'));
+    const wantCity = dIdx(D.city || [], p('city'));
+    const wantCountry = dIdx(D.country || [], p('country'));
+    const wantMesh = dIdx(D.mesh || [], p('mesh'));
+    const postedYear = /^\d{4}$/.test(p('posted_year')) ? +p('posted_year') : null;
+    const sgroup = p('sgroup');            // 'industry' | 'other'
     const scope = p('scope');
     const ymin = /^\d{4}$/.test(p('year_min')) ? +p('year_min') : null;
     const ymax = /^\d{4}$/.test(p('year_max')) ? +p('year_max') : null;
@@ -73,8 +78,10 @@ const Static = {
     // a filter naming a value absent from the dictionary can match nothing
     const impossible = [[p('phase'), wantPhase], [p('status'), wantStatus],
       [p('type'), wantType], [p('sponsor_class'), wantSClass], [p('sponsor'), wantSpon],
-      [p('province'), wantProv], [p('condition'), wantCond]]
+      [p('province'), wantProv], [p('condition'), wantCond], [p('city'), wantCity],
+      [p('country'), wantCountry], [p('mesh'), wantMesh]]
       .some(([raw, i]) => raw && i < 0);
+    const INDUSTRY = D.sclass.indexOf('INDUSTRY');
 
     const hits = [];
     if (!impossible) {
@@ -86,6 +93,12 @@ const Static = {
         if (wantSpon >= 0 && c.s[i] !== wantSpon) continue;
         if (wantProv >= 0 && !c.pr[i].includes(wantProv)) continue;
         if (wantCond >= 0 && !c.cd[i].includes(wantCond)) continue;
+        if (wantCity >= 0 && !(c.ci && c.ci[i].includes(wantCity))) continue;
+        if (wantCountry >= 0 && !(c.co && c.co[i].includes(wantCountry))) continue;
+        if (wantMesh >= 0 && !(c.me && c.me[i].includes(wantMesh))) continue;
+        if (postedYear !== null && !(c.py && c.py[i] === postedYear)) continue;
+        if (sgroup === 'industry' && c.sc[i] !== INDUSTRY) continue;
+        if (sgroup === 'other' && c.sc[i] === INDUSTRY) continue;
         const f = c.f[i];
         if (onlyCn && !(f & F_CN_SPONSOR)) continue;
         if (onlyRes && !(f & F_RESULTS)) continue;
@@ -326,12 +339,15 @@ function timeBars(rows, opt, W) {
     const x = padL + i * slot + 2.5;
     const bh = (r.n / max) * plotH, y = padT + plotH - bh;
     const partial = opt.partialFrom && r.y >= opt.partialFrom;
+    const href = opt.href ? opt.href(r) : null;
     const tip = `<div class='t'>${esc(r.y)}</div><div class='r'>${fmt(r.n)} trials`
-      + (partial ? ' (partial year)' : '') + `</div>`;
-    s += `<g data-tip="${esc(tip)}">`;
+      + (partial ? ' (partial year)' : '') + `</div>`
+      + (href ? `<div class='r' style='margin-top:5px'>Click to see these trials →</div>` : '');
+    const [open, close] = clickWrap(href, tip);
+    s += open;
     s += `<rect class="hit" x="${x - 2}" y="${padT}" width="${bw + 5}" height="${plotH}"/>`;
     s += `<path d="${barUp(x, y, bw, bh, 4)}" fill="${color}"${partial ? ' opacity="0.55"' : ''}/>`;
-    s += `</g>`;
+    s += close;
     if (i % step === 0 || i === rows.length - 1)
       s += `<text class="axis-txt" x="${x + bw / 2}" y="${h - 9}" text-anchor="middle">${esc(String(r.y).slice(2))}</text>`;
   });
@@ -369,9 +385,19 @@ function stackBars(rows, names, colors, opt, W) {
       // 2px surface gap between stacked segments
       const drawH = k < r.parts.length - 1 ? Math.max(0.5, segH - 2) : segH;
       const isTop = k === r.parts.length - 1;
-      s += isTop
+      const shape = isTop
         ? `<path d="${barUp(x, y, bw, drawH, 4)}" fill="${colors[k]}"/>`
         : `<rect x="${x}" y="${y + (segH - drawH)}" width="${bw}" height="${drawH}" fill="${colors[k]}"/>`;
+      // each segment links to its own slice, so a click is never ambiguous
+      const segHref = opt.hrefPart ? opt.hrefPart(r, k) : null;
+      if (segHref) {
+        const segTip = `<div class='t'>${esc(r.y)} · ${esc(names[k])}</div>`
+          + `<div class='r'>${fmt(p)} trials (${(p / tot * 100).toFixed(0)}%)</div>`
+          + `<div class='r' style='margin-top:5px'>Click to see these trials →</div>`;
+        s += `<a href="${esc(segHref)}" class="clk" data-tip="${esc(segTip)}">${shape}</a>`;
+      } else {
+        s += shape;
+      }
       acc += p;
     });
     s += `</g>`;
@@ -432,14 +458,17 @@ async function viewDashboard() {
 
     <div class="grid g-2">
       <div class="card"><div class="hd"><h2>Trials registered per year</h2>
-        <span class="note">by first-posted date</span></div>
+        ${CLICK_HINT}</div>
         ${chartSlot(w => timeBars(m.by_year.filter(r => r.y >= 2005),
-          { partialFrom: partial, color: 'var(--series-1)', aria: 'Trials registered per year' }, w))}</div>
+          { partialFrom: partial, color: 'var(--series-1)',
+            href: r => qsLink('posted_year', r.y),
+            aria: 'Trials registered per year' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Industry vs. academic &amp; other</h2>
-        <span class="note">lead sponsor class</span></div>
+        ${CLICK_HINT}</div>
         ${chartSlot(w => stackBars(stackRows, STACK_NAMES, STACK_COLORS,
-          { aria: 'Industry versus other sponsors per year' }, w))}
+          { hrefPart: (r, k) => `#/search?posted_year=${r.y}&sgroup=${k === 0 ? 'industry' : 'other'}`,
+            aria: 'Industry versus other sponsors per year' }, w))}
         ${legend(STACK_NAMES, STACK_COLORS)}</div>
 
       <div class="card"><div class="hd"><h2>Study phase</h2>
@@ -459,9 +488,9 @@ async function viewDashboard() {
           href: r => qsLink('province', r.v), aria: 'Trials by province' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Most active cities</h2>
-        <span class="note">mainland sites</span></div>
+        ${CLICK_HINT}</div>
         ${chartSlot(w => hBars(m.cities.slice(0, 14), { labelFrac: 0.32, color: 'var(--series-4)',
-          aria: 'Trials by city' }, w))}</div>
+          href: r => qsLink('city', r.v), aria: 'Trials by city' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Largest industry sponsors</h2>
         ${CLICK_HINT}</div>
@@ -482,14 +511,15 @@ async function viewDashboard() {
           aria: 'Top conditions' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Condition areas</h2>
-        <span class="note">standardised MeSH terms</span></div>
+        ${CLICK_HINT}</div>
         ${chartSlot(w => hBars(m.top_mesh.slice(0, 15), { labelFrac: 0.46, labelMax: 300,
-          color: 'var(--series-8)', aria: 'Top MeSH condition areas' }, w))}</div>
+          color: 'var(--series-8)', href: r => qsLink('mesh', r.v),
+          aria: 'Top MeSH condition areas' }, w))}</div>
 
       <div class="card"><div class="hd"><h2>Countries partnered with</h2>
-        <span class="note">co-located sites outside China</span></div>
+        ${CLICK_HINT}</div>
         ${chartSlot(w => hBars(m.partners.slice(0, 15), { labelFrac: 0.34, color: 'var(--series-3)',
-          aria: 'Partner countries' }, w))}</div>
+          href: r => qsLink('country', r.v), aria: 'Partner countries' }, w))}</div>
     </div>`;
   renderCharts(app);
 }
@@ -564,6 +594,7 @@ async function viewSearch() {
           <input type="search" id="q" placeholder="e.g. hepatocellular carcinoma, PD-1, CAR-T…" value="${esc(p.get('q') || '')}">
           <button class="btn" id="go">Search</button>
         </div>
+        <div id="chips" class="chips"></div>
         <div class="resbar">
           <div class="count" id="count">…</div>
           <div class="spacer" style="flex:1"></div>
@@ -593,6 +624,9 @@ async function viewSearch() {
   const collect = () => {
     const n = new URLSearchParams();
     const put = (k, v) => { if (v) n.set(k, v); };
+    // Filters arriving from a dashboard click have no sidebar control. Carry
+    // them through, or changing any dropdown would silently drop them.
+    EXTRA_FILTERS.forEach(k => put(k, p.get(k)));
     put('q', document.getElementById('q').value.trim());
     put('scope', document.getElementById('f-scope').value);
     put('phase', document.getElementById('f-phase').value);
@@ -617,7 +651,37 @@ async function viewSearch() {
   document.getElementById('q').onkeydown = e => { if (e.key === 'Enter') apply(); };
   document.getElementById('f-clear').onclick = () => setQS(new URLSearchParams());
 
+  renderChips(p);
   await runSearch(p);
+}
+
+/* Filters that can only arrive from a dashboard click - they have no sidebar
+   control, so they are surfaced as removable chips above the results. */
+const EXTRA_FILTERS = ['city', 'country', 'mesh', 'posted_year', 'sgroup'];
+const EXTRA_LABEL = {
+  city: 'City', country: 'Country', mesh: 'Condition area',
+  posted_year: 'Registered in', sgroup: 'Sponsor type',
+};
+const SGROUP_LABEL = { industry: 'Industry', other: 'Academic / government / other' };
+
+function renderChips(p) {
+  const box = document.getElementById('chips');
+  if (!box) return;
+  const active = EXTRA_FILTERS.filter(k => p.get(k));
+  box.innerHTML = active.length === 0 ? '' : active.map(k => {
+    const raw = p.get(k);
+    const shown = k === 'sgroup' ? (SGROUP_LABEL[raw] || raw) : raw;
+    return `<span class="chip">${esc(EXTRA_LABEL[k])}: <b>${esc(shown)}</b>`
+      + `<button class="chip-x" data-drop="${esc(k)}" title="Remove this filter"aria-label="Remove ${esc(EXTRA_LABEL[k])} filter">×</button></span>`;
+  }).join('');
+  box.querySelectorAll('[data-drop]').forEach(b => {
+    b.onclick = () => {
+      const n = new URLSearchParams(p);
+      n.delete(b.getAttribute('data-drop'));
+      n.delete('page');
+      setQS(n);
+    };
+  });
 }
 
 const STATUS_DOT = s => s === 'RECRUITING' || s === 'NOT_YET_RECRUITING' ? 'st-rec'
