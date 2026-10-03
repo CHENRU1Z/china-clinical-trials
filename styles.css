@@ -238,6 +238,7 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 .pill.p1 { border-color: var(--series-1); color: var(--series-1); }
 .pill.cn { border-color: var(--series-3); color: var(--series-3); }
 .pill.ind { border-color: var(--series-2); color: var(--series-2); }
+.pill.dev { border-color: var(--series-7); color: var(--series-7); }
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .st-rec { background: var(--good); }
 .st-done { background: var(--text-muted); }

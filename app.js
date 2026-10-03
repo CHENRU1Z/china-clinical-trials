@@ -68,6 +68,9 @@ const Static = {
     const wantCity = dIdx(D.city || [], p('city'));
     const wantCountry = dIdx(D.country || [], p('country'));
     const wantMesh = dIdx(D.mesh || [], p('mesh'));
+    const wantDType = dIdx(D.device_type || [], p('device_type'));
+    const wantArea = dIdx(D.therapeutic_area || [], p('therapeutic_area'));
+    const deviceOnly = p('device') === '1';
     const postedYear = /^\d{4}$/.test(p('posted_year')) ? +p('posted_year') : null;
     const sgroup = p('sgroup');            // 'industry' | 'other'
     const scope = p('scope');
@@ -79,7 +82,8 @@ const Static = {
     const impossible = [[p('phase'), wantPhase], [p('status'), wantStatus],
       [p('type'), wantType], [p('sponsor_class'), wantSClass], [p('sponsor'), wantSpon],
       [p('province'), wantProv], [p('condition'), wantCond], [p('city'), wantCity],
-      [p('country'), wantCountry], [p('mesh'), wantMesh]]
+      [p('country'), wantCountry], [p('mesh'), wantMesh],
+      [p('device_type'), wantDType], [p('therapeutic_area'), wantArea]]
       .some(([raw, i]) => raw && i < 0);
     const INDUSTRY = D.sclass.indexOf('INDUSTRY');
 
@@ -97,6 +101,9 @@ const Static = {
         if (wantCountry >= 0 && !(c.co && c.co[i].includes(wantCountry))) continue;
         if (wantMesh >= 0 && !(c.me && c.me[i].includes(wantMesh))) continue;
         if (postedYear !== null && !(c.py && c.py[i] === postedYear)) continue;
+        if (deviceOnly && !(c.dk && c.dk[i])) continue;
+        if (wantDType >= 0 && !(c.dt && c.dt[i] === wantDType)) continue;
+        if (wantArea >= 0 && !(c.ta && c.ta[i] === wantArea)) continue;
         if (sgroup === 'industry' && c.sc[i] !== INDUSTRY) continue;
         if (sgroup === 'other' && c.sc[i] === INDUSTRY) continue;
         const f = c.f[i];
@@ -163,6 +170,7 @@ const Static = {
         start_date: c.sd[i] || null,
         n_sites_cn: c.nc[i],
         n_other_countries: c.no[i],   // names live in the detail shard
+        is_device: (c.dk && c.dk[i]) ? 1 : 0,
         has_results: (c.f[i] & F_RESULTS) ? 1 : 0,
         by_site: (c.f[i] & F_BY_SITE) ? 1 : 0,
       })),
@@ -529,6 +537,137 @@ const CLICK_HINT = '<span class="hint"><b>Click a bar</b> to filter</span>';
 const pretty = s => String(s || '').replace(/_/g, ' ').toLowerCase()
   .replace(/^./, c => c.toUpperCase());
 
+/* ---------------------------------------------------------------- devices */
+async function viewDevices() {
+  app.innerHTML = `<div class="loading">Loading devices…</div>`;
+  if (!META) META = await DS.meta();
+  const m = META, d = m.device;
+  if (!d) {
+    app.innerHTML = `<div class="empty">This build has no device data yet —
+      re-run <code>04_export_static.py</code>.</div>`;
+    return;
+  }
+  const t = d.totals, all = m.totals.trials;
+  const tile = (v, k, s) => `<div class="tile"><div class="v">${v}</div>
+      <div class="k">${k}</div>${s ? `<div class="d">${s}</div>` : ''}</div>`;
+
+  // Chinese vs multinational device sponsors, by year
+  const byYO = {};
+  (d.by_year_origin || []).forEach(r => {
+    (byYO[r.y] ||= { y: r.y, cn: 0, intl: 0 });
+    if (r.cn) byYO[r.y].cn += r.n; else byYO[r.y].intl += r.n;
+  });
+  const originRows = Object.values(byYO).sort((a, b) => a.y - b.y)
+    .map(r => ({ y: r.y, parts: [r.cn, r.intl] }));
+  const ORIGIN_NAMES = ['Chinese sponsor', 'Non-Chinese sponsor'];
+  const ORIGIN_COLORS = ['var(--series-3)', 'var(--series-5)'];
+
+  const uncatType = (d.by_type.find(r => r.v === 'Uncategorised') || { n: 0 }).n;
+  const typeRows = d.by_type.filter(r => r.v !== 'Uncategorised');
+  const uncatArea = (d.by_area.find(r => r.v === 'Uncategorised') || { n: 0 }).n;
+
+  app.innerHTML = `
+    <h1>Medical device trials</h1>
+    <p class="sub">The ${fmt(t.trials)} trials in scope that test a device, a diagnostic
+      test or a combination product — ${(t.trials / all * 100).toFixed(0)}% of the
+      ${fmt(all)} in the database. Snapshot ${esc(m.snapshot || '')}; ${2026} is partial.</p>
+
+    <div class="grid g-tiles" style="margin-bottom:14px">
+      ${tile(fmt(t.trials), 'Device trials', `${(t.trials / all * 100).toFixed(0)}% of all trials`)}
+      ${tile(fmt(t.industry), 'Industry-led', `${(t.industry / t.trials * 100).toFixed(0)}% of device trials`)}
+      ${tile(fmt(t.cn_sponsor), 'Chinese sponsor', `${(t.cn_sponsor / t.trials * 100).toFixed(0)}% of device trials`)}
+      ${tile(fmt(t.diagnostic), 'Diagnostic tests', 'included in the total')}
+      ${tile(fmt(t.recruiting), 'Recruiting now', 'current status')}
+      ${tile(fmt(t.with_results), 'With posted results', `${(t.with_results / t.trials * 100).toFixed(1)}% of device trials`)}
+    </div>
+
+    <div class="grid g-2">
+      <div class="card"><div class="hd"><h2>Device trials per year</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => timeBars((d.by_year || []).filter(r => r.y >= 2010),
+          { partialFrom: 2026, color: 'var(--series-3)',
+            href: r => `#/search?device=1&posted_year=${r.y}`,
+            aria: 'Device trials per year' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Chinese vs. non-Chinese sponsors</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => stackBars(originRows, ORIGIN_NAMES, ORIGIN_COLORS,
+          { hrefPart: (r, k) => `#/search?device=1&posted_year=${r.y}`
+              + (k === 0 ? '&cn_sponsor=1' : ''),
+            aria: 'Chinese versus non-Chinese device sponsors' }, w))}
+        ${legend(ORIGIN_NAMES, ORIGIN_COLORS)}</div>
+
+      <div class="card"><div class="hd"><h2>Therapeutic area</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(d.by_area.filter(r => r.v !== 'Uncategorised').slice(0, 14),
+          { labelFrac: 0.44, labelMax: 260, color: 'var(--series-1)', pctOf: t.trials,
+            href: r => `#/search?device=1&therapeutic_area=${encodeURIComponent(r.v)}`,
+            aria: 'Device trials by therapeutic area' }, w))}
+        <div class="note" style="margin-top:8px;font-size:12px;color:var(--text-muted)">
+          Derived from condition MeSH terms. ${fmt(uncatArea)} of ${fmt(t.trials)}
+          (${(uncatArea / t.trials * 100).toFixed(0)}%) carry no MeSH condition and are not shown.</div></div>
+
+      <div class="card"><div class="hd"><h2>Device type</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(typeRows, { labelFrac: 0.44, labelMax: 260,
+          color: 'var(--series-2)',
+          href: r => `#/search?device_type=${encodeURIComponent(r.v)}`,
+          aria: 'Device trials by device type' }, w))}
+        <div class="note" style="margin-top:8px;font-size:12px;color:var(--text-muted)">
+          Matched on intervention names. ${fmt(uncatType)} of ${fmt(t.trials)}
+          (${(uncatType / t.trials * 100).toFixed(0)}%) match no keyword and are not shown.</div></div>
+
+      <div class="card"><div class="hd"><h2>Study purpose</h2>
+        <span class="note">devices have no Phase I–IV</span></div>
+        ${chartSlot(w => hBars(d.by_purpose.map(r => ({ v: pretty(r.v), n: r.n })),
+          { labelFrac: 0.36, color: 'var(--series-7)', pctOf: t.trials,
+            aria: 'Device trials by primary purpose' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Recruitment status</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(d.by_status.map(r => ({ v: pretty(r.v), n: r.n, raw: r.v })),
+          { labelFrac: 0.36, color: 'var(--series-4)', pctOf: t.trials,
+            href: r => `#/search?device=1&status=${encodeURIComponent(r.raw)}`,
+            aria: 'Device trials by status' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Device companies</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(d.top_industry.slice(0, 15), { labelFrac: 0.52, labelMax: 330,
+          color: 'var(--series-2)',
+          href: r => `#/search?device=1&sponsor=${encodeURIComponent(r.v)}`,
+          aria: 'Top device companies' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Academic device sponsors</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(d.top_academic.slice(0, 15), { labelFrac: 0.52, labelMax: 330,
+          color: 'var(--series-1)',
+          href: r => `#/search?device=1&sponsor=${encodeURIComponent(r.v)}`,
+          aria: 'Top academic device sponsors' }, w))}</div>
+
+      <div class="card"><div class="hd"><h2>Where device trials run</h2>
+        ${CLICK_HINT}</div>
+        ${chartSlot(w => hBars(d.provinces, { labelFrac: 0.42, color: 'var(--series-6)',
+          href: r => `#/search?device=1&province=${encodeURIComponent(r.v)}`,
+          aria: 'Device trials by province' }, w))}</div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;
+                 color:var(--text-muted);margin:0 0 8px;font-weight:640">How this is defined</h3>
+      <p style="font-size:14px;color:var(--text-secondary);margin:0 0 8px">
+        A trial counts as a device trial when any intervention is typed
+        <b>DEVICE</b>, <b>DIAGNOSTIC_TEST</b> or <b>COMBINATION_PRODUCT</b> on
+        ClinicalTrials.gov. That is the registry's own tag, and submitters apply it
+        loosely — interventions such as “mask ventilation”, “acupuncture” and
+        “bright light therapy” carry it too. Treat ${fmt(t.trials)} as an upper bound.</p>
+      <p style="font-size:14px;color:var(--text-secondary);margin:0">
+        Neither axis exists in the source data. <b>Therapeutic area</b> is inferred
+        from condition MeSH terms and <b>device type</b> from keywords in intervention
+        names, so both carry an explicit unmatched bucket rather than a guess.</p>
+    </div>`;
+  renderCharts(app);
+}
+
 /* ----------------------------------------------------------------- search */
 function qs() { return new URLSearchParams((location.hash.split('?')[1] || '')); }
 function setQS(p, { push = true } = {}) {
@@ -576,6 +715,10 @@ async function viewSearch() {
             <select id="f-prov">${opts(f.province, p.get('province'), 'Any province')}</select></div>
           <div class="fgroup"><label>Condition</label>
             <select id="f-cond">${opts(f.condition, p.get('condition'), 'Any condition')}</select></div>
+          <div class="fgroup"><label>Therapeutic area</label>
+            <select id="f-area">${opts(f.therapeutic_area || [], p.get('therapeutic_area'), 'Any area')}</select></div>
+          <div class="fgroup"><label>Device type</label>
+            <select id="f-dtype">${opts(f.device_type || [], p.get('device_type'), 'Any device type')}</select></div>
           <div class="fgroup"><label>Start year</label>
             <div class="yr">
               <input type="text" id="f-ymin" inputmode="numeric" placeholder="from" value="${esc(p.get('year_min') || '')}">
@@ -583,6 +726,7 @@ async function viewSearch() {
             </div></div>
           <div class="fgroup"><label>Only</label>
             <label class="chk"><input type="checkbox" id="f-cn"> Chinese lead sponsor</label>
+            <label class="chk"><input type="checkbox" id="f-dev"> Device trials</label>
             <label class="chk"><input type="checkbox" id="f-res"> Has posted results</label>
           </div>
           <button class="btn ghost" id="f-clear" style="width:100%">Clear filters</button>
@@ -618,8 +762,10 @@ async function viewSearch() {
   set('f-scope', 'scope'); set('f-phase', 'phase'); set('f-status', 'status');
   set('f-sclass', 'sponsor_class'); set('f-sponsor', 'sponsor');
   set('f-prov', 'province'); set('f-cond', 'condition'); set('sort', 'sort');
+  set('f-area', 'therapeutic_area'); set('f-dtype', 'device_type');
   document.getElementById('f-cn').checked = p.get('cn_sponsor') === '1';
   document.getElementById('f-res').checked = p.get('has_results') === '1';
+  document.getElementById('f-dev').checked = p.get('device') === '1';
 
   const collect = () => {
     const n = new URLSearchParams();
@@ -635,17 +781,21 @@ async function viewSearch() {
     put('sponsor', document.getElementById('f-sponsor').value);
     put('province', document.getElementById('f-prov').value);
     put('condition', document.getElementById('f-cond').value);
+    put('therapeutic_area', document.getElementById('f-area').value);
+    put('device_type', document.getElementById('f-dtype').value);
     put('year_min', document.getElementById('f-ymin').value.trim());
     put('year_max', document.getElementById('f-ymax').value.trim());
     if (document.getElementById('f-cn').checked) n.set('cn_sponsor', '1');
     if (document.getElementById('f-res').checked) n.set('has_results', '1');
+    if (document.getElementById('f-dev').checked) n.set('device', '1');
     put('sort', document.getElementById('sort').value);
     return n;
   };
   const apply = () => setQS(collect());
-  ['f-scope', 'f-phase', 'f-status', 'f-sclass', 'f-sponsor', 'f-prov', 'f-cond', 'sort']
+  ['f-scope', 'f-phase', 'f-status', 'f-sclass', 'f-sponsor', 'f-prov', 'f-cond',
+   'f-area', 'f-dtype', 'sort']
     .forEach(id => document.getElementById(id).onchange = apply);
-  ['f-cn', 'f-res'].forEach(id => document.getElementById(id).onchange = apply);
+  ['f-cn', 'f-res', 'f-dev'].forEach(id => document.getElementById(id).onchange = apply);
   ['f-ymin', 'f-ymax'].forEach(id => document.getElementById(id).onchange = apply);
   document.getElementById('go').onclick = apply;
   document.getElementById('q').onkeydown = e => { if (e.key === 'Enter') apply(); };
@@ -711,6 +861,7 @@ async function runSearch(p) {
         <span class="pill p1">${esc(r.phase)}</span>
         ${r.lead_sponsor_class === 'INDUSTRY' ? '<span class="pill ind">Industry</span>' : ''}
         ${r.lead_sponsor_is_cn ? '<span class="pill cn">Chinese sponsor</span>' : ''}
+        ${r.is_device ? '<span class="pill dev">Device</span>' : ''}
         ${!r.by_site ? '<span class="pill">No China site</span>' : ''}
         ${r.has_results ? '<span class="pill">Results posted</span>' : ''}
       </div>
@@ -875,6 +1026,7 @@ async function route() {
     a.classList.toggle('on', path.startsWith(a.getAttribute('href'))));
   tip.style.opacity = 0;
   if (path.startsWith('#/trial/')) return viewTrial(path.slice(8));
+  if (path.startsWith('#/devices')) return viewDevices();
   if (path.startsWith('#/search')) return viewSearch();
   if (path.startsWith('#/about')) { if (!META) META = await DS.meta(); return viewAbout(); }
   return viewDashboard();
